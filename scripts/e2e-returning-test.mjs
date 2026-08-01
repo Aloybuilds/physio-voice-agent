@@ -1,5 +1,5 @@
 /**
- * E2E returning-caller + reschedule test for the BMJ Physiotherapy voice agent.
+ * E2E returning-caller + reschedule test for the Meridian Physiotherapy voice agent.
  *
  * Seeds a known patient (Sarah Lim, 98765432, upcoming booking + a medical-
  * history note from a previous call), then calls in to move the appointment.
@@ -35,7 +35,7 @@ if (!promptMatch) {
 const SYSTEM_PROMPT = promptMatch[1];
 
 const MOBILE = randomMobile();
-const SEED_REF = 'BMJ-' + String(Math.floor(1000 + Math.random() * 9000));
+const SEED_REF = 'MPC-' + String(Math.floor(1000 + Math.random() * 9000));
 const SEED_SLOT = 'Wednesday, 5 August at 2:30pm';
 
 /** Seed the known patient this test will call in as. */
@@ -156,7 +156,7 @@ async function executeClinicFunction(name, args) {
   if (name === 'cancel_appointment') return { status: 'error', detail: 'Not expected in this test.' };
   if (name === 'log_call_note') return { status: 'noted' };
   if (name === 'book_appointment') {
-    return { status: 'confirmed', reference: 'BMJ-0000', detail: 'Booked.' };
+    return { status: 'confirmed', reference: 'MPC-0000', detail: 'Booked.' };
   }
   if (name === 'request_callback') {
     return { status: 'logged', detail: 'Callback request recorded.' };

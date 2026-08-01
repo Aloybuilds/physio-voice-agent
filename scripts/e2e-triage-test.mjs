@@ -1,5 +1,5 @@
 /**
- * E2E triage regression test for the BMJ Physiotherapy voice agent.
+ * E2E triage regression test for the Meridian Physiotherapy voice agent.
  *
  * Replays the real 2026-08-01 failure case: a caller mentions a RECOVERED
  * slipped disc with no current symptoms, wanting a physio check before
@@ -111,7 +111,7 @@ function executeClinicFunction(name, args) {
   if (name === 'book_appointment') {
     results.bookAppointmentCalled = true;
     results.bookedArgs = args;
-    const reference = 'BMJ-' + String(Math.floor(1000 + Math.random() * 9000));
+    const reference = 'MPC-' + String(Math.floor(1000 + Math.random() * 9000));
     results.bookedRef = reference;
     return {
       status: 'confirmed',

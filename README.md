@@ -1,6 +1,7 @@
 # Jane — AI Voice Receptionist for a Physiotherapy Clinic
 
-A working phone receptionist for a real Singapore physiotherapy clinic, built on
+A working phone receptionist for a Singapore physiotherapy clinic (a real clinic —
+name fictionalized here as "Meridian Physiotherapy"), built on
 **Deepgram's Voice Agent API** (Nova-3 STT · Aura-2 TTS · function calling), with
 **Deepgram Text Intelligence** auto-summarizing every call for the owner's dashboard.
 

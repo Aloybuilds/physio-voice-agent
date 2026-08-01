@@ -8,7 +8,7 @@ export const CLINIC_FUNCTION_DEFS = [
   {
     name: 'check_availability',
     description:
-      'Check open appointment slots at a BMJ Physiotherapy branch. Call this before offering any appointment times — never invent slots.',
+      'Check open appointment slots at a Meridian Physiotherapy branch. Call this before offering any appointment times — never invent slots.',
     parameters: {
       type: 'object',
       properties: {
@@ -55,7 +55,7 @@ export const CLINIC_FUNCTION_DEFS = [
       type: 'object',
       properties: {
         mobile: { type: 'string', description: 'Mobile number as digits only' },
-        reference: { type: 'string', description: 'Booking reference if the caller has it, e.g. BMJ-1042' },
+        reference: { type: 'string', description: 'Booking reference if the caller has it, e.g. MPC-1042' },
         reason: { type: 'string', description: 'Reason for cancelling, if given' },
       },
       required: ['mobile'],
@@ -165,7 +165,7 @@ export function buildSettings(systemPrompt) {
       output: { encoding: 'linear16', sample_rate: 24000 },
     },
     agent: {
-      greeting: 'Hello, thank you for calling BMJ Physiotherapy, this is Jane speaking. How can I help you today?',
+      greeting: 'Hello, thank you for calling Meridian Physiotherapy, this is Jane speaking. How can I help you today?',
       listen: { provider: { type: 'deepgram', version: 'v1', model: 'nova-3' } },
       speak: { provider: { type: 'deepgram', model: 'aura-2-thalia-en' } },
       think: {

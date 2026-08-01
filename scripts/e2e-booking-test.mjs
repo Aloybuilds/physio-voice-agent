@@ -1,5 +1,5 @@
 /**
- * E2E booking-flow test for the BMJ Physiotherapy voice agent.
+ * E2E booking-flow test for the Meridian Physiotherapy voice agent.
  *
  * Drives a full scripted booking conversation through the real stack:
  *   this script → local server proxy (JWT auth) → Deepgram Voice Agent API
@@ -14,7 +14,7 @@
  * Pass criteria (checked at the end):
  *   1. check_availability called before any slot was offered
  *   2. book_appointment called with the agreed slot
- *   3. a booking record with a BMJ- reference was appended to call-logs
+ *   3. a booking record with a MPC- reference was appended to call-logs
  */
 
 import { WebSocket } from 'ws';
@@ -106,7 +106,7 @@ function executeClinicFunction(name, args) {
   }
   if (name === 'book_appointment') {
     results.bookAppointmentCalled = true;
-    const reference = 'BMJ-' + String(Math.floor(1000 + Math.random() * 9000));
+    const reference = 'MPC-' + String(Math.floor(1000 + Math.random() * 9000));
     results.bookedRef = reference;
     results.bookedArgs = args;
     fetch(`${BASE}/api/call-log`, {
