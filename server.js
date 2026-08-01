@@ -81,6 +81,30 @@ const activeConnections = new Set();
 
 // Enable CORS
 app.use(cors());
+app.use(express.json());
+
+// ============================================================================
+// CALL LOG - structured record of every booking/callback the agent handles
+// ============================================================================
+
+const CALL_LOG_DIR = path.join(__dirname, 'call-logs');
+const CALL_LOG_FILE = path.join(CALL_LOG_DIR, 'calls.jsonl');
+
+/**
+ * POST /api/call-log — append a structured call record (booking or callback).
+ * This is the "no enquiry ever lost" artifact: one JSON line per record.
+ */
+app.post('/api/call-log', (req, res) => {
+  try {
+    if (!fs.existsSync(CALL_LOG_DIR)) fs.mkdirSync(CALL_LOG_DIR, { recursive: true });
+    fs.appendFileSync(CALL_LOG_FILE, JSON.stringify(req.body) + '\n');
+    console.log('📋 Call record logged:', req.body.kind, '-', req.body.patient_name || req.body.name || '');
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Failed to write call log:', error);
+    res.status(500).json({ ok: false });
+  }
+});
 
 // ============================================================================
 // SESSION ROUTES - Auth endpoints (unprotected)

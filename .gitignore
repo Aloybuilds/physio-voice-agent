@@ -50,3 +50,6 @@ test-results/
 
 # Local Deepgram working directory
 .deepgram/
+
+# Call summary log (contains caller names/numbers from test calls)
+call-logs/

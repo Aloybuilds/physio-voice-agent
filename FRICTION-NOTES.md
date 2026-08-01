@@ -1,0 +1,8 @@
+# Deepgram DX friction notes (for application + feedback)
+
+Logged while building a physio-clinic voice agent on the Voice Agent API, starting 2026-07-31.
+
+1. **Starter repo submodules use SSH URLs** — `node-voice-agent` references `contracts` and `frontend` submodules via `git@github.com:`. A fresh developer machine without GitHub SSH keys fails `git clone --recurse-submodules` with "Host key verification failed". Fix was editing `.gitmodules` to HTTPS. Suggest: HTTPS URLs in `.gitmodules` (standard for public starters).
+2. **`voice-agent-settings-configuration` docs URL 404s** — linked from search/older pages; the live page is `/docs/voice-agent-settings`. Broken-link redirect would help.
+3. **Starter playback is choppy/staticky** — chunks are played as isolated buffers chained via `onended`, leaving audible gaps/clicks at every chunk boundary; agent speech sounds like static. Also no barge-in flush: leftover scheduled audio keeps playing after the user interrupts. Fixed locally with a continuous-timeline scheduler (`nextPlayTime` cursor) + flushing scheduled sources on `UserStartedSpeaking`.
+4. **Starter fails silently under Chrome's autoplay policy** — `node-voice-agent` frontend creates its `AudioContext` but never calls `resume()`. Chrome starts contexts `suspended`, so the app connects fine, mic permission shows "Active", text chat works — but zero audio flows either direction (Audio Chunks stays 0) with no error shown. First-run experience looks broken. Fix: `await audioContext.resume()` after creation. Suggest patching the starter + surfacing `audioContext.state` in the status panel.
