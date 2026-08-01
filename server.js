@@ -90,15 +90,60 @@ app.use(express.json());
 const CALL_LOG_DIR = path.join(__dirname, 'call-logs');
 const CALL_LOG_FILE = path.join(CALL_LOG_DIR, 'calls.jsonl');
 
+/** Flatten a call transcript into plain text for the summarizer. */
+function transcriptToText(transcript) {
+  return (transcript || [])
+    .map((l) => `${l.role === 'agent' ? 'Receptionist' : 'Caller'}: ${l.text}`)
+    .join('\n');
+}
+
 /**
- * POST /api/call-log — append a structured call record (booking or callback).
- * This is the "no enquiry ever lost" artifact: one JSON line per record.
+ * Summarize a call transcript with Deepgram Text Intelligence (/v1/read).
+ * Returns the summary string, or null when the transcript is too short
+ * (the API needs more than 50 words) or the request fails — the call
+ * record is written either way, just without a summary.
  */
-app.post('/api/call-log', (req, res) => {
+async function summarizeTranscript(transcript) {
+  const text = transcriptToText(transcript);
+  if (text.split(/\s+/).filter(Boolean).length <= 50) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
+    const response = await fetch('https://api.deepgram.com/v1/read?summarize=true&language=en', {
+      method: 'POST',
+      headers: {
+        Authorization: `Token ${CONFIG.deepgramApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ text }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`read API returned ${response.status}`);
+    const data = await response.json();
+    return (data.results && data.results.summary && data.results.summary.text) || null;
+  } catch (error) {
+    console.warn('Transcript summary skipped:', error.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * POST /api/call-log — append a structured call record (booking, callback,
+ * note, or full call summary). This is the "no enquiry ever lost" artifact:
+ * one JSON line per record. Full call summaries get an auto-generated
+ * summary_text via Deepgram Text Intelligence before being written.
+ */
+app.post('/api/call-log', async (req, res) => {
+  try {
+    const record = req.body;
+    if (record.kind === 'call_summary' && Array.isArray(record.transcript)) {
+      record.summary_text = await summarizeTranscript(record.transcript);
+    }
     if (!fs.existsSync(CALL_LOG_DIR)) fs.mkdirSync(CALL_LOG_DIR, { recursive: true });
-    fs.appendFileSync(CALL_LOG_FILE, JSON.stringify(req.body) + '\n');
-    console.log('📋 Call record logged:', req.body.kind, '-', req.body.patient_name || req.body.name || '');
+    fs.appendFileSync(CALL_LOG_FILE, JSON.stringify(record) + '\n');
+    console.log('📋 Call record logged:', record.kind, '-', record.patient_name || record.name || '');
     res.json({ ok: true });
   } catch (error) {
     console.error('Failed to write call log:', error);

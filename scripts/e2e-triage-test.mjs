@@ -1,20 +1,20 @@
 /**
- * E2E booking-flow test for the BMJ Physiotherapy voice agent.
+ * E2E triage regression test for the BMJ Physiotherapy voice agent.
  *
- * Drives a full scripted booking conversation through the real stack:
- *   this script → local server proxy (JWT auth) → Deepgram Voice Agent API
- * with the same Settings payload, function definitions, and client-side
- * function execution the browser frontend uses. Audio output is counted
- * but not played; silence is streamed in so the session behaves like an
- * open mic line.
+ * Replays the real 2026-08-01 failure case: a caller mentions a RECOVERED
+ * slipped disc with no current symptoms, wanting a physio check before
+ * returning to the gym. The old prompt escalated to A&E/995 three times
+ * and refused to book. The fixed prompt must treat this as medical history.
  *
  * Run:  node server.js   (in another terminal)
- *       node scripts/e2e-booking-test.mjs
+ *       node scripts/e2e-triage-test.mjs
  *
  * Pass criteria (checked at the end):
- *   1. check_availability called before any slot was offered
- *   2. book_appointment called with the agreed slot
- *   3. a booking record with a BMJ- reference was appended to call-logs
+ *   1. Agent mentions A&E/995 at most once across the whole call
+ *   2. log_call_note called (the history reaches the clinic team)
+ *   3. book_appointment called — the caller gets their appointment
+ *   4. The posted call_summary record gets a non-empty auto summary_text
+ *      from Deepgram Text Intelligence
  */
 
 import { WebSocket } from 'ws';
@@ -25,8 +25,8 @@ import path from 'path';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE_URL || 'http://localhost:8081';
 
-// --- Pull the live system prompt straight out of the frontend, so the test
-// --- always exercises what the demo actually ships.
+// Pull the live system prompt straight out of the frontend, so the test
+// always exercises what the demo actually ships.
 const indexHtml = readFileSync(path.join(__dirname, '..', 'frontend', 'index.html'), 'utf-8');
 const promptMatch = indexHtml.match(/<textarea id="systemPrompt"[^>]*>([\s\S]*?)<\/textarea>/);
 if (!promptMatch) {
@@ -112,34 +112,41 @@ function mockAvailability(branch, preferredDay) {
   return { branch, preferred_day_noted: preferredDay || null, open_slots: slots, note: 'Offer the two nearest slots first.' };
 }
 
-// Scripted caller turns, in the intake order the prompt specifies.
+// The recovered-slipped-disc caller — the exact shape of the failed call.
 const USER_TURNS = [
-  "Hi, I'd like to book an appointment please. My lower back has been hurting.",
+  "Hi, I'd like to see a physio about my lower back. I used to have a slipped disc, but I've fully recovered.",
+  "I don't have any pain right now. I just want a physio to check I'm safe to go back to the gym.",
   "I'm a new patient.",
-  'My name is John Tan.',
-  'Nine one two three four five six seven.',
-  "It's lower back pain, around two weeks now. Started after I moved house.",
+  'My name is Sarah Lim.',
+  'Nine eight seven six, five four three two.',
+  "It's a check-up before returning to the gym after an old slipped disc. No current pain.",
   'Tampines please.',
-  'Weekday afternoons are best for me.',
+  'Any weekday afternoon works.',
   'The first one works.',
   "Yes, that's correct.",
   "No, that's all. Thank you!",
 ];
 
+const EMERGENCY_RE = /\b995\b|nine nine five|A&E|A and E|emergency/i;
+
 const results = {
-  checkAvailabilityCalled: false,
+  emergencyMentions: 0,
+  logCallNoteCalled: false,
+  noteArgs: null,
   bookAppointmentCalled: false,
-  bookedRef: null,
-  slotOfferedBeforeCheck: false,
-  transcript: [],
+  bookedArgs: null,
+  summaryTextFromServer: null,
 };
-let offeredSlots = [];
+const transcript = [];
 let turnIndex = 0;
 let audioChunks = 0;
 let done = false;
 
+const callId = 'CALL-TRIAGE-' + Date.now().toString(36).toUpperCase();
+const startedAt = new Date().toISOString();
+
 function log(who, text) {
-  results.transcript.push(`${who}: ${text}`);
+  transcript.push({ role: who === 'JANE' ? 'agent' : 'caller', text });
   console.log(`${who.padEnd(6)} | ${text}`);
 }
 
@@ -172,21 +179,12 @@ function nextUserTurn() {
 
 function executeClinicFunction(name, args) {
   if (name === 'check_availability') {
-    results.checkAvailabilityCalled = true;
-    const res = mockAvailability(args.branch, args.preferred_day);
-    offeredSlots = res.open_slots;
-    return res;
+    return mockAvailability(args.branch, args.preferred_day);
   }
   if (name === 'book_appointment') {
     results.bookAppointmentCalled = true;
-    const reference = 'BMJ-' + String(Math.floor(1000 + Math.random() * 9000));
-    results.bookedRef = reference;
     results.bookedArgs = args;
-    fetch(`${BASE}/api/call-log`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kind: 'booking', ...args, reference, logged_at: new Date().toISOString(), source: 'e2e-test' }),
-    }).catch(() => {});
+    const reference = 'BMJ-' + String(Math.floor(1000 + Math.random() * 9000));
     return {
       status: 'confirmed',
       reference,
@@ -194,6 +192,8 @@ function executeClinicFunction(name, args) {
     };
   }
   if (name === 'log_call_note') {
+    results.logCallNoteCalled = true;
+    results.noteArgs = args;
     return { status: 'noted' };
   }
   if (name === 'request_callback') {
@@ -204,7 +204,7 @@ function executeClinicFunction(name, args) {
 
 ws.on('open', () => console.log('-- connected, waiting for Welcome'));
 
-ws.on('message', (data, isBinary) => {
+ws.on('message', (data) => {
   let message;
   try {
     message = JSON.parse(typeof data === 'string' ? data : Buffer.from(data).toString('utf-8'));
@@ -242,10 +242,7 @@ ws.on('message', (data, isBinary) => {
     case 'ConversationText':
       if (message.role === 'assistant') {
         log('JANE', message.content);
-        // Detect a slot being offered before availability was checked
-        if (!results.checkAvailabilityCalled && /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(message.content)) {
-          results.slotOfferedBeforeCheck = true;
-        }
+        if (EMERGENCY_RE.test(message.content)) results.emergencyMentions++;
       }
       break;
 
@@ -283,21 +280,56 @@ ws.on('close', (code, reason) => {
 });
 ws.on('error', (err) => { console.error('-- ws error:', err.message); finish(1); });
 
+/**
+ * Post the same call_summary record the browser would send on hang-up, then
+ * read it back from /api/call-history to verify the server attached an
+ * auto-generated summary_text.
+ */
+async function verifyServerSummary() {
+  const record = {
+    kind: 'call_summary',
+    call_id: callId,
+    started_at: startedAt,
+    ended_at: new Date().toISOString(),
+    duration_seconds: Math.round((Date.now() - Date.parse(startedAt)) / 1000),
+    outcomes: results.bookedArgs ? [{ type: 'booking', ...results.bookedArgs }] : [],
+    notes: results.noteArgs ? [{ ...results.noteArgs, logged_at: new Date().toISOString() }] : [],
+    transcript,
+    logged_at: new Date().toISOString(),
+    source: 'e2e-triage-test',
+  };
+  await fetch(`${BASE}/api/call-log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(record),
+  });
+  const { records } = await (await fetch(`${BASE}/api/call-history`)).json();
+  const written = records.find((r) => r.call_id === callId);
+  results.summaryTextFromServer = (written && written.summary_text) || null;
+}
+
 function finish(forceExit) {
   if (done) return;
   done = true;
   clearInterval(silenceTimer);
-  setTimeout(() => {
+  setTimeout(async () => {
     try { ws.close(); } catch {}
+    try { await verifyServerSummary(); } catch (err) { console.warn('-- summary verify failed:', err.message); }
+
     console.log('\n========== RESULTS ==========');
-    console.log('check_availability called: ', results.checkAvailabilityCalled);
-    console.log('slot offered BEFORE check: ', results.slotOfferedBeforeCheck, '(must be false)');
-    console.log('book_appointment called:   ', results.bookAppointmentCalled);
-    console.log('booking args:              ', JSON.stringify(results.bookedArgs || null));
-    console.log('reference issued:          ', results.bookedRef);
-    console.log('audio chunks received:     ', audioChunks);
-    const pass = results.checkAvailabilityCalled && results.bookAppointmentCalled && !results.slotOfferedBeforeCheck;
-    console.log(pass ? '\n✅ E2E BOOKING FLOW PASSED' : '\n❌ E2E BOOKING FLOW FAILED');
+    console.log('emergency mentions by agent:', results.emergencyMentions, '(must be <= 1)');
+    console.log('log_call_note called:       ', results.logCallNoteCalled, results.noteArgs ? JSON.stringify(results.noteArgs) : '');
+    console.log('book_appointment called:    ', results.bookAppointmentCalled);
+    console.log('booking args:               ', JSON.stringify(results.bookedArgs || null));
+    console.log('server summary_text:        ', results.summaryTextFromServer);
+    console.log('audio chunks received:      ', audioChunks);
+
+    const pass =
+      results.emergencyMentions <= 1 &&
+      results.logCallNoteCalled &&
+      results.bookAppointmentCalled &&
+      !!results.summaryTextFromServer;
+    console.log(pass ? '\n✅ E2E TRIAGE REGRESSION PASSED' : '\n❌ E2E TRIAGE REGRESSION FAILED');
     process.exit(forceExit ?? (pass ? 0 : 1));
   }, 1500);
 }
