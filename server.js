@@ -90,6 +90,46 @@ app.use(express.json());
 const CALL_LOG_DIR = path.join(__dirname, 'call-logs');
 const CALL_LOG_FILE = path.join(CALL_LOG_DIR, 'calls.jsonl');
 
+/**
+ * Normalize a mobile number to digits only. Voice models often pass numbers
+ * as spoken words ("nine eight seven six, five four three two") — records
+ * must store digits so lookups and staff can use them.
+ */
+function normalizeMobile(value) {
+  if (!value) return '';
+  const words = {
+    zero: '0', oh: '0', o: '0', one: '1', two: '2', three: '3', four: '4',
+    five: '5', six: '6', seven: '7', eight: '8', nine: '9',
+  };
+  let out = '';
+  for (const token of String(value).toLowerCase().split(/[^a-z0-9]+/)) {
+    if (!token) continue;
+    if (/^\d+$/.test(token)) out += token;
+    else if (words[token] !== undefined) out += words[token];
+  }
+  return out;
+}
+
+/** Normalize every mobile field on a record (top level + nested outcomes). */
+function normalizeRecordMobiles(record) {
+  if (record.mobile) record.mobile = normalizeMobile(record.mobile) || record.mobile;
+  if (Array.isArray(record.outcomes)) {
+    for (const o of record.outcomes) {
+      if (o.mobile) o.mobile = normalizeMobile(o.mobile) || o.mobile;
+    }
+  }
+}
+
+/** Read all call records from the JSONL log, oldest first. */
+function readCallRecords() {
+  if (!fs.existsSync(CALL_LOG_FILE)) return [];
+  return fs.readFileSync(CALL_LOG_FILE, 'utf-8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+    .filter(Boolean);
+}
+
 /** Flatten a call transcript into plain text for the summarizer. */
 function transcriptToText(transcript) {
   return (transcript || [])
@@ -138,6 +178,7 @@ async function summarizeTranscript(transcript) {
 app.post('/api/call-log', async (req, res) => {
   try {
     const record = req.body;
+    normalizeRecordMobiles(record);
     if (record.kind === 'call_summary' && Array.isArray(record.transcript)) {
       record.summary_text = await summarizeTranscript(record.transcript);
     }
@@ -157,17 +198,73 @@ app.post('/api/call-log', async (req, res) => {
  */
 app.get('/api/call-history', (req, res) => {
   try {
-    if (!fs.existsSync(CALL_LOG_FILE)) return res.json({ records: [] });
-    const records = fs.readFileSync(CALL_LOG_FILE, 'utf-8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
-      .filter(Boolean)
-      .reverse();
-    res.json({ records });
+    res.json({ records: readCallRecords().reverse() });
   } catch (error) {
     console.error('Failed to read call history:', error);
     res.status(500).json({ records: [], error: 'READ_FAILED' });
+  }
+});
+
+/**
+ * GET /api/caller-history?mobile=98765432 — returning-caller memory.
+ * Scans the call log for everything known about a mobile number: name,
+ * bookings (with cancellations/reschedules applied), and notes the agent
+ * logged on previous calls. Legacy records with spoken-word mobiles are
+ * normalized at read time, so old data still matches.
+ */
+app.get('/api/caller-history', (req, res) => {
+  try {
+    const mobile = normalizeMobile(req.query.mobile || '');
+    if (mobile.length < 4) {
+      return res.json({ known: false, mobile, name: null, upcoming_booking: null, bookings: [], notes: [] });
+    }
+    const bookings = new Map(); // reference (or branch|slot) -> booking
+    const notes = [];
+    let name = null;
+
+    const upsertBooking = (b) => {
+      const key = b.reference || `${b.branch}|${b.slot}`;
+      if (!bookings.has(key)) bookings.set(key, b);
+    };
+
+    for (const r of readCallRecords()) {
+      if (r.kind === 'booking' && normalizeMobile(r.mobile) === mobile) {
+        upsertBooking({ reference: r.reference || null, branch: r.branch, slot: r.slot, complaint: r.complaint || null, status: 'booked' });
+        if (r.patient_name) name = r.patient_name;
+      } else if (r.kind === 'callback' && normalizeMobile(r.mobile) === mobile) {
+        if (r.name && !name) name = r.name;
+      } else if (r.kind === 'cancellation' && normalizeMobile(r.mobile) === mobile) {
+        const b = r.reference && bookings.get(r.reference);
+        if (b) b.status = 'cancelled';
+      } else if (r.kind === 'reschedule' && normalizeMobile(r.mobile) === mobile) {
+        const b = r.reference && bookings.get(r.reference);
+        if (b) { b.slot = r.new_slot; b.status = 'booked'; }
+      } else if (r.kind === 'call_summary') {
+        const matched = (r.outcomes || []).some((o) => normalizeMobile(o.mobile) === mobile);
+        if (!matched) continue;
+        for (const o of r.outcomes || []) {
+          if (o.type === 'booking' && normalizeMobile(o.mobile) === mobile) {
+            upsertBooking({ reference: o.reference || null, branch: o.branch, slot: o.slot, complaint: o.complaint || null, status: 'booked' });
+            if (o.patient_name) name = o.patient_name;
+          }
+        }
+        for (const n of r.notes || []) notes.push({ note: n.note, category: n.category || 'other' });
+      }
+    }
+
+    const list = [...bookings.values()];
+    const active = list.filter((b) => b.status === 'booked');
+    res.json({
+      known: !!(name || list.length),
+      mobile,
+      name,
+      upcoming_booking: active.length ? active[active.length - 1] : null,
+      bookings: list,
+      notes,
+    });
+  } catch (error) {
+    console.error('Failed to read caller history:', error);
+    res.status(500).json({ known: false, error: 'READ_FAILED' });
   }
 });
 

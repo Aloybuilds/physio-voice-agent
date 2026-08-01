@@ -21,6 +21,7 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { mockAvailability, buildSettings, randomMobile, speakDigits } from './clinic-defs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.BASE_URL || 'http://localhost:8081';
@@ -35,82 +36,8 @@ if (!promptMatch) {
 }
 const SYSTEM_PROMPT = promptMatch[1];
 
-// Mirrors CLINIC_FUNCTION_DEFS in frontend/main.js
-const CLINIC_FUNCTION_DEFS = [
-  {
-    name: 'check_availability',
-    description:
-      'Check open appointment slots at a BMJ Physiotherapy branch. Call this before offering any appointment times — never invent slots.',
-    parameters: {
-      type: 'object',
-      properties: {
-        branch: { type: 'string', description: 'Branch name, e.g. Ang Mo Kio, Marine Parade, Tampines' },
-        preferred_day: { type: 'string', description: "Caller's preferred day if stated, e.g. Tuesday, tomorrow, weekend" },
-      },
-      required: ['branch'],
-    },
-  },
-  {
-    name: 'book_appointment',
-    description:
-      'Book a confirmed appointment slot. Only call after the caller has explicitly agreed to a specific slot returned by check_availability and confirmed their mobile number.',
-    parameters: {
-      type: 'object',
-      properties: {
-        patient_name: { type: 'string', description: 'Full name of the caller' },
-        mobile: { type: 'string', description: 'Mobile number, confirmed by repeating back' },
-        patient_type: { type: 'string', description: 'new or returning' },
-        complaint: { type: 'string', description: 'What the problem is and how long they have had it' },
-        branch: { type: 'string', description: 'Branch for the appointment' },
-        slot: { type: 'string', description: 'The exact slot string the caller agreed to' },
-      },
-      required: ['patient_name', 'mobile', 'branch', 'slot'],
-    },
-  },
-  {
-    name: 'log_call_note',
-    description:
-      'Silently record a note for the clinic team about this call — relevant medical history, a past condition, that emergency care was advised, or special requests. Never tell the caller you are logging a note.',
-    parameters: {
-      type: 'object',
-      properties: {
-        note: { type: 'string', description: 'One or two sentences the clinic team should read before the visit' },
-        category: { type: 'string', description: 'One of: medical_history, safety_advice_given, special_request, other' },
-      },
-      required: ['note'],
-    },
-  },
-  {
-    name: 'request_callback',
-    description:
-      'Log a callback request for the human team when the caller asks for a human, or asks something outside your knowledge. Team calls back within one working day.',
-    parameters: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Caller name' },
-        mobile: { type: 'string', description: 'Mobile number to call back' },
-        topic: { type: 'string', description: 'What the callback is about' },
-      },
-      required: ['name', 'mobile', 'topic'],
-    },
-  },
-];
-
-// Mirrors mockAvailability in frontend/main.js
-function mockAvailability(branch, preferredDay) {
-  const times = ['9:30am', '11:00am', '2:30pm', '4:00pm', '5:30pm'];
-  let hash = 0;
-  for (const ch of (branch || '')) hash = (hash + ch.charCodeAt(0)) % times.length;
-  const slots = [];
-  const day = new Date();
-  while (slots.length < 3) {
-    day.setDate(day.getDate() + 1);
-    if (day.getDay() === 0) continue;
-    const label = day.toLocaleDateString('en-SG', { weekday: 'long', day: 'numeric', month: 'long' });
-    slots.push(`${label} at ${times[(hash + slots.length * 2) % times.length]}`);
-  }
-  return { branch, preferred_day_noted: preferredDay || null, open_slots: slots, note: 'Offer the two nearest slots first.' };
-}
+// Fresh number each run so past test runs don't make this caller "known".
+const MOBILE = randomMobile();
 
 // The recovered-slipped-disc caller — the exact shape of the failed call.
 const USER_TURNS = [
@@ -118,7 +45,7 @@ const USER_TURNS = [
   "I don't have any pain right now. I just want a physio to check I'm safe to go back to the gym.",
   "I'm a new patient.",
   'My name is Sarah Lim.',
-  'Nine eight seven six, five four three two.',
+  `${speakDigits(MOBILE)}.`,
   "It's a check-up before returning to the gym after an old slipped disc. No current pain.",
   'Tampines please.',
   'Any weekday afternoon works.',
@@ -185,6 +112,7 @@ function executeClinicFunction(name, args) {
     results.bookAppointmentCalled = true;
     results.bookedArgs = args;
     const reference = 'BMJ-' + String(Math.floor(1000 + Math.random() * 9000));
+    results.bookedRef = reference;
     return {
       status: 'confirmed',
       reference,
@@ -195,6 +123,14 @@ function executeClinicFunction(name, args) {
     results.logCallNoteCalled = true;
     results.noteArgs = args;
     return { status: 'noted' };
+  }
+  if (name === 'lookup_caller') {
+    return fetch(`${BASE}/api/caller-history?mobile=${encodeURIComponent(args.mobile || '')}`)
+      .then((r) => r.json())
+      .catch(() => ({ known: false, detail: 'Lookup unavailable — treat as a new caller.' }));
+  }
+  if (name === 'cancel_appointment' || name === 'reschedule_appointment') {
+    return { status: 'error', detail: 'Not supported in this test.' };
   }
   if (name === 'request_callback') {
     return { status: 'logged', detail: 'Callback request recorded. The team will call back within one working day.' };
@@ -215,23 +151,7 @@ ws.on('message', (data) => {
 
   switch (message.type) {
     case 'Welcome':
-      send({
-        type: 'Settings',
-        audio: {
-          input: { encoding: 'linear16', sample_rate: 16000 },
-          output: { encoding: 'linear16', sample_rate: 24000 },
-        },
-        agent: {
-          greeting: 'Hello, thank you for calling BMJ Physiotherapy, this is Jane speaking. How can I help you today?',
-          listen: { provider: { type: 'deepgram', version: 'v1', model: 'nova-3' } },
-          speak: { provider: { type: 'deepgram', model: 'aura-2-thalia-en' } },
-          think: {
-            provider: { type: 'open_ai', model: 'gpt-4o-mini' },
-            prompt: SYSTEM_PROMPT,
-            functions: CLINIC_FUNCTION_DEFS,
-          },
-        },
-      });
+      send(buildSettings(SYSTEM_PROMPT));
       break;
 
     case 'SettingsApplied':
@@ -256,10 +176,11 @@ ws.on('message', (data) => {
         let args = {};
         try { args = call.arguments ? JSON.parse(call.arguments) : {}; } catch {}
         console.log(`-- function: ${call.name}(${JSON.stringify(args)})`);
-        const result = executeClinicFunction(call.name, args);
-        const response = { type: 'FunctionCallResponse', id: call.id, name: call.name, content: JSON.stringify(result) };
-        if (call.thought_signature) response.thought_signature = call.thought_signature;
-        send(response);
+        Promise.resolve(executeClinicFunction(call.name, args)).then((result) => {
+          const response = { type: 'FunctionCallResponse', id: call.id, name: call.name, content: JSON.stringify(result) };
+          if (call.thought_signature) response.thought_signature = call.thought_signature;
+          send(response);
+        });
       }
       break;
 
@@ -292,7 +213,7 @@ async function verifyServerSummary() {
     started_at: startedAt,
     ended_at: new Date().toISOString(),
     duration_seconds: Math.round((Date.now() - Date.parse(startedAt)) / 1000),
-    outcomes: results.bookedArgs ? [{ type: 'booking', ...results.bookedArgs }] : [],
+    outcomes: results.bookedArgs ? [{ type: 'booking', reference: results.bookedRef, ...results.bookedArgs }] : [],
     notes: results.noteArgs ? [{ ...results.noteArgs, logged_at: new Date().toISOString() }] : [],
     transcript,
     logged_at: new Date().toISOString(),
