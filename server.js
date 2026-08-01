@@ -106,6 +106,26 @@ app.post('/api/call-log', (req, res) => {
   }
 });
 
+/**
+ * GET /api/call-history — return all call records, newest first.
+ * Powers the owner-facing Call History page.
+ */
+app.get('/api/call-history', (req, res) => {
+  try {
+    if (!fs.existsSync(CALL_LOG_FILE)) return res.json({ records: [] });
+    const records = fs.readFileSync(CALL_LOG_FILE, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+      .filter(Boolean)
+      .reverse();
+    res.json({ records });
+  } catch (error) {
+    console.error('Failed to read call history:', error);
+    res.status(500).json({ records: [], error: 'READ_FAILED' });
+  }
+});
+
 // ============================================================================
 // SESSION ROUTES - Auth endpoints (unprotected)
 // ============================================================================
